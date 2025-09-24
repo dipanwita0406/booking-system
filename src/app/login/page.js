@@ -1,21 +1,26 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Eye, EyeOff, Mail, Lock, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Eye, EyeOff, Mail, Lock, AlertCircle, CheckCircle, Loader2, Shield, User as UserIcon } from 'lucide-react';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword,
   signInWithPopup,
   GoogleAuthProvider,
-  sendPasswordResetEmail 
+  sendPasswordResetEmail,
+  onAuthStateChanged
 } from 'firebase/auth';
-import { auth } from '../../../firebase-config';
+import { auth, database } from '../../../firebase-config';
+import { ref, set, get, push } from 'firebase/database';
 import Navbar from '@/components/navbar';
 
 const googleProvider = new GoogleAuthProvider();
 
 export default function Login() {
+  const router = useRouter();
   const [isLogin, setIsLogin] = useState(true);
+  const [userType, setUserType] = useState('user');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resetEmailSent, setResetEmailSent] = useState(false);
@@ -24,7 +29,8 @@ export default function Login() {
   const [formData, setFormData] = useState({
     email: '',
     password: '',
-    confirmPassword: ''
+    confirmPassword: '',
+    fullName: ''
   });
   
   const [errors, setErrors] = useState({});
@@ -36,8 +42,20 @@ export default function Login() {
     hasMinLength: false
   });
 
+  const adminEmails = [
+    'dipanwita957@gmail.com'
+  ];
+
   useEffect(() => {
     setMounted(true);
+    
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user && !loading) {
+        handleExistingUser(user);
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -51,6 +69,26 @@ export default function Login() {
       });
     }
   }, [formData.password, isLogin]);
+
+  const isAdminEmail = (email) => {
+    return adminEmails.includes(email.toLowerCase());
+  };
+
+  const handleExistingUser = async (user) => {
+    try {
+      const userData = await storeUserInFirebase(user, false);
+      
+      setTimeout(() => {
+        if (userData.role === 'admin') {
+          router.push('/admin-management');
+        } else {
+          router.push('/bookings');
+        }
+      }, 1000);
+    } catch (error) {
+      console.error('Error handling existing user:', error);
+    }
+  };
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -67,7 +105,24 @@ export default function Login() {
     if (!formData.email) {
       newErrors.email = 'Email is required';
     } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
-      newErrors.email = 'Please enter a valid email';
+      newErrors.email = 'Please enter a valid email address';
+    }
+    
+    // Validate user type for both login and signup
+    if (userType === 'admin' && !isAdminEmail(formData.email)) {
+      if (isLogin) {
+        newErrors.email = 'This email is not authorized for admin access. Please use a valid admin email or switch to Student/Staff login.';
+      } else {
+        newErrors.email = 'Only authorized ISBR admin email addresses can create admin accounts. Please use Student/Staff signup or contact IT support.';
+      }
+    }
+    
+    if (userType === 'user' && isAdminEmail(formData.email)) {
+      if (isLogin) {
+        newErrors.email = 'This is an admin email. Please use the Admin login option.';
+      } else {
+        newErrors.email = 'This is an authorized admin email. Please select Admin account type to proceed.';
+      }
     }
     
     if (!formData.password) {
@@ -75,10 +130,14 @@ export default function Login() {
     }
     
     if (!isLogin) {
+      if (!formData.fullName.trim()) {
+        newErrors.fullName = 'Full name is required';
+      }
+      
       const { hasUppercase, hasLowercase, hasNumber, hasSpecialChar, hasMinLength } = passwordStrength;
       
       if (!hasUppercase || !hasLowercase || !hasNumber || !hasSpecialChar || !hasMinLength) {
-        newErrors.password = 'Password does not meet requirements';
+        newErrors.password = 'Password must meet all requirements listed below';
       }
       
       if (formData.password !== formData.confirmPassword) {
@@ -90,88 +149,260 @@ export default function Login() {
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    if (!validateForm()) return;
-    
-    setLoading(true);
-    
+  const storeUserInFirebase = async (user, isNewUser = false, additionalData = {}) => {
     try {
-      if (isLogin) {
-        const userCredential = await signInWithEmailAndPassword(auth, formData.email, formData.password);
-        console.log('User logged in:', userCredential.user);
-        window.location.href = '/dashboard';
-      } else {
-        const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
-        console.log('User created:', userCredential.user);
-        await storeUserInMongoDB(userCredential.user);
-        window.location.href = '/dashboard';
+      const isAdmin = isAdminEmail(user.email);
+      const userRef = ref(database, `users/${user.uid}`);
+      
+      let userData = {
+        uid: user.uid,
+        email: user.email,
+        displayName: user.displayName || additionalData.fullName || user.email.split('@')[0],
+        photoURL: user.photoURL || '',
+        role: isAdmin ? 'admin' : 'user',
+        lastLogin: new Date().toISOString(),
+        ...additionalData
+      };
+
+      if (isNewUser) {
+        userData.createdAt = new Date().toISOString();
       }
+
+      const existingUser = await get(userRef);
+      if (!existingUser.exists() || isNewUser) {
+        await set(userRef, userData);
+      } else {
+        const existingData = existingUser.val();
+        userData = { ...existingData, lastLogin: new Date().toISOString() };
+        await set(userRef, userData);
+      }
+
+      console.log('User data stored successfully:', userData);
+      return userData;
+    } catch (error) {
+      console.error('Error storing user data:', error);
+      
+      try {
+        const fallbackRef = ref(database, `user_logs`);
+        await push(fallbackRef, {
+          uid: user.uid,
+          email: user.email,
+          timestamp: new Date().toISOString(),
+          action: isNewUser ? 'signup' : 'login'
+        });
+      } catch (fallbackError) {
+        console.error('Fallback storage also failed:', fallbackError);
+      }
+
+      throw error;
+    }
+  };
+
+  const handleUserAfterAuth = async (user, isNewUser = false, additionalData = {}) => {
+    try {
+      const userData = await storeUserInFirebase(user, isNewUser, additionalData);
+      
+      // Verify user type matches email for both login and signup
+      const expectedRole = isAdminEmail(user.email) ? 'admin' : 'user';
+      const selectedRole = userType === 'admin' ? 'admin' : 'user';
+      
+      if (expectedRole !== selectedRole) {
+        setLoading(false);
+        if (isLogin) {
+          if (expectedRole === 'admin') {
+            setErrors({ general: 'This is an admin account. Please use the Admin login option.' });
+          } else {
+            setErrors({ general: 'This account is not authorized for admin access. Please use Student/Staff login.' });
+          }
+        } else {
+          if (expectedRole === 'admin') {
+            setErrors({ general: 'This email has admin privileges. Please select Admin account type to proceed.' });
+          } else {
+            setErrors({ general: 'This email is not authorized for admin access. Please select Student/Staff account type.' });
+          }
+        }
+        return;
+      }
+      
+      setTimeout(() => {
+        setLoading(false);
+        if (userData.role === 'admin') {
+          router.push('/admin-management');
+        } else {
+          router.push('/bookings');
+        }
+      }, 1500);
+    } catch (error) {
+      console.error('Error handling user after auth:', error);
+      setLoading(false);
+      
+      // Fallback navigation
+      setTimeout(() => {
+        const isAdmin = isAdminEmail(user.email);
+        if (isAdmin) {
+          router.push('/admin-management');
+        } else {
+          router.push('/bookings');
+        }
+      }, 1000);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+  e.preventDefault();
+  
+  if (!validateForm()) return;
+  
+  setLoading(true);
+  setErrors({});
+  
+  try {
+    if (isLogin) {
+      const userCredential = await signInWithEmailAndPassword(auth, formData.email, formData.password);
+      await handleUserAfterAuth(userCredential.user, false, { selectedUserType: userType });
+    } else {
+      const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
+      await handleUserAfterAuth(userCredential.user, true, { fullName: formData.fullName, selectedUserType: userType });
+    }
     } catch (error) {
       console.error('Authentication error:', error);
-      setErrors({ general: error.message });
-    } finally {
+      let errorMessage = 'Something went wrong. Please try again.';
+      
+      switch (error.code) {
+        case 'auth/user-not-found':
+          errorMessage = 'No account exists with this email address. Please check your email or sign up for a new account.';
+          break;
+        case 'auth/wrong-password':
+          errorMessage = 'Incorrect password. Please check your password and try again.';
+          break;
+        case 'auth/invalid-credential':
+          errorMessage = 'Invalid email or password. Please check your credentials and try again.';
+          break;
+        case 'auth/email-already-in-use':
+          errorMessage = 'An account with this email address already exists. Please try signing in instead.';
+          break;
+        case 'auth/weak-password':
+          errorMessage = 'Password is too weak. Please choose a stronger password with at least 6 characters.';
+          break;
+        case 'auth/invalid-email':
+          errorMessage = 'Please enter a valid email address.';
+          break;
+        case 'auth/too-many-requests':
+          errorMessage = 'Too many failed login attempts. Please wait a few minutes before trying again.';
+          break;
+        case 'auth/network-request-failed':
+          errorMessage = 'Network error. Please check your internet connection and try again.';
+          break;
+        case 'auth/user-disabled':
+          errorMessage = 'This account has been disabled. Please contact support for assistance.';
+          break;
+        case 'auth/operation-not-allowed':
+          errorMessage = 'Email/password accounts are not enabled. Please contact support.';
+          break;
+        case 'auth/requires-recent-login':
+          errorMessage = 'Please log out and log back in before retrying this operation.';
+          break;
+      }
+      
+      setErrors({ general: errorMessage });
       setLoading(false);
     }
   };
 
   const handleGoogleSignIn = async () => {
     setLoading(true);
+    setErrors({});
     
     try {
       const result = await signInWithPopup(auth, googleProvider);
-      console.log('Google sign-in successful:', result.user);
+      const isNewUser = result._tokenResponse?.isNewUser || false;
       
-      if (result._tokenResponse?.isNewUser) {
-        await storeUserInMongoDB(result.user);
+      // For Google sign-in, we need to check if the email matches the selected user type
+      const isAdmin = isAdminEmail(result.user.email);
+      const expectedRole = isAdmin ? 'admin' : 'user';
+      const selectedRole = userType === 'admin' ? 'admin' : 'user';
+      
+      if (expectedRole !== selectedRole) {
+        setLoading(false);
+        if (isLogin) {
+          if (expectedRole === 'admin') {
+            setErrors({ general: 'This Google account has admin privileges. Please use the Admin login option.' });
+          } else {
+            setErrors({ general: 'This Google account is not authorized for admin access. Please use Student/Staff login.' });
+          }
+        } else {
+          if (expectedRole === 'admin') {
+            setErrors({ general: 'This Google account has admin privileges. Please select Admin account type to proceed.' });
+          } else {
+            setErrors({ general: 'This Google account is not authorized for admin access. Please select Student/Staff account type.' });
+          }
+        }
+        return;
       }
       
-      window.location.href = '/dashboard';
+      await handleUserAfterAuth(result.user, isNewUser);
     } catch (error) {
       console.error('Google sign-in error:', error);
-      setErrors({ general: error.message });
-    } finally {
+      let errorMessage = 'Google sign-in failed. Please try again.';
+      
+      switch (error.code) {
+        case 'auth/popup-closed-by-user':
+          errorMessage = 'Sign-in was cancelled. Please try again.';
+          break;
+        case 'auth/network-request-failed':
+          errorMessage = 'Network error. Please check your internet connection and try again.';
+          break;
+        case 'auth/popup-blocked':
+          errorMessage = 'Popup was blocked by your browser. Please allow popups for this site and try again.';
+          break;
+        case 'auth/cancelled-popup-request':
+          errorMessage = 'Sign-in was cancelled. Please try again.';
+          break;
+        case 'auth/account-exists-with-different-credential':
+          errorMessage = 'An account already exists with this email using a different sign-in method. Please try signing in with email and password.';
+          break;
+      }
+      
+      setErrors({ general: errorMessage });
       setLoading(false);
     }
   };
 
   const handleForgotPassword = async () => {
     if (!formData.email) {
-      setErrors({ email: 'Please enter your email first' });
+      setErrors({ email: 'Please enter your email address first' });
+      return;
+    }
+    
+    if (!/\S+@\S+\.\S+/.test(formData.email)) {
+      setErrors({ email: 'Please enter a valid email address' });
       return;
     }
     
     try {
       await sendPasswordResetEmail(auth, formData.email);
       setResetEmailSent(true);
+      setErrors({});
     } catch (error) {
       console.error('Password reset error:', error);
-      setErrors({ general: error.message });
-    }
-  };
-
-  const storeUserInMongoDB = async (user) => {
-    try {
-      const response = await fetch('/api/users', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          uid: user.uid,
-          email: user.email,
-          displayName: user.displayName,
-          photoURL: user.photoURL,
-          createdAt: new Date().toISOString(),
-        }),
-      });
+      let errorMessage = 'Failed to send password reset email. Please try again.';
       
-      if (!response.ok) {
-        throw new Error('Failed to store user data');
+      switch (error.code) {
+        case 'auth/user-not-found':
+          errorMessage = 'No account found with this email address. Please check your email or sign up for a new account.';
+          break;
+        case 'auth/invalid-email':
+          errorMessage = 'Please enter a valid email address.';
+          break;
+        case 'auth/too-many-requests':
+          errorMessage = 'Too many password reset requests. Please wait a few minutes before trying again.';
+          break;
+        case 'auth/network-request-failed':
+          errorMessage = 'Network error. Please check your internet connection and try again.';
+          break;
       }
-    } catch (error) {
-      console.error('Error storing user in MongoDB:', error);
+      
+      setErrors({ general: errorMessage });
     }
   };
 
@@ -240,8 +471,45 @@ export default function Login() {
                 {isLogin ? 'Welcome Back' : 'Join ISBR'}
               </h2>
               <p className="text-sm text-[#8C1007]">
-                {isLogin ? 'Sign in to your booking account' : 'Create your booking account'}
+                {isLogin ? 'Sign in to your account' : 'Create your account'}
               </p>
+            </div>
+
+            <div className="mb-6">
+              <label className="block text-sm font-bold mb-3 text-[#8C1007]">
+                {isLogin ? 'Select Login Type' : 'Select Account Type'}
+              </label>
+              <div className="flex rounded-lg border-2 border-[#FFCC00] p-1 bg-[#FFCC00]/10">
+                <button
+                  type="button"
+                  onClick={() => setUserType('user')}
+                  className={`flex-1 flex items-center justify-center space-x-2 py-2 px-3 rounded-md font-medium transition-all duration-200 ${
+                    userType === 'user'
+                      ? 'bg-[#8C1007] text-white shadow-sm'
+                      : 'text-[#8C1007] hover:bg-[#FFCC00]/20'
+                  }`}
+                >
+                  <UserIcon size={18} />
+                  <span>Student/Staff</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUserType('admin')}
+                  className={`flex-1 flex items-center justify-center space-x-2 py-2 px-3 rounded-md font-medium transition-all duration-200 ${
+                    userType === 'admin'
+                      ? 'bg-[#8C1007] text-white shadow-sm'
+                      : 'text-[#8C1007] hover:bg-[#FFCC00]/20'
+                  }`}
+                >
+                  <Shield size={18} />
+                  <span>Admin</span>
+                </button>
+              </div>
+              {!isLogin && userType === 'admin' && (
+                <p className="mt-2 text-xs text-[#8C1007] bg-[#FFCC00]/10 p-2 rounded border border-[#FFCC00]">
+                  <strong>Note:</strong> Admin accounts require an authorized ISBR admin email address (admin@isbr.edu, principal@isbr.edu, etc.)
+                </p>
+              )}
             </div>
 
             {resetEmailSent && (
@@ -249,20 +517,42 @@ export default function Login() {
                 <div className="flex items-center space-x-2">
                   <CheckCircle size={20} />
                   <span className="text-sm font-medium">
-                    Password reset email sent! Check your inbox.
+                    Password reset email sent successfully! Please check your inbox and follow the instructions.
                   </span>
                 </div>
               </div>
             )}
 
             {errors.general && (
-              <div className="mb-6 p-4 rounded-lg border-2 flex items-center space-x-2 bg-red-50 border-red-500 text-red-700">
-                <AlertCircle size={20} />
+              <div className="mb-6 p-4 rounded-lg border-2 flex items-start space-x-2 bg-red-50 border-red-500 text-red-700">
+                <AlertCircle size={20} className="flex-shrink-0 mt-0.5" />
                 <span className="text-sm font-medium">{errors.general}</span>
               </div>
             )}
 
             <form onSubmit={handleSubmit} className="space-y-6">
+              {!isLogin && (
+                <div>
+                  <label className="block text-sm font-bold mb-2 text-[#8C1007]">
+                    Full Name
+                  </label>
+                  <div className="relative">
+                    <UserIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-[#8C1007]" />
+                    <input
+                      type="text"
+                      name="fullName"
+                      value={formData.fullName}
+                      onChange={handleInputChange}
+                      className={`w-full pl-10 pr-4 py-3 border-2 rounded-lg focus:ring-2 focus:ring-offset-0 transition-all duration-200 font-medium bg-white border-[#FFCC00] text-[#8C1007] focus:border-[#8C1007] focus:ring-[#8C1007]/20 placeholder-gray-500 ${errors.fullName ? 'border-red-500' : ''}`}
+                      placeholder="Enter your full name"
+                    />
+                  </div>
+                  {errors.fullName && (
+                    <p className="mt-1 text-sm text-red-500 font-medium">{errors.fullName}</p>
+                  )}
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-bold mb-2 text-[#8C1007]">
                   Email Address
@@ -344,7 +634,12 @@ export default function Login() {
                     <span>{isLogin ? 'Signing In...' : 'Creating Account...'}</span>
                   </div>
                 ) : (
-                  <span>{isLogin ? 'Sign In to ISBR' : 'Create ISBR Account'}</span>
+                  <span>
+                    {isLogin 
+                      ? (userType === 'admin' ? 'Admin Sign In' : 'Sign In to ISBR') 
+                      : 'Create ISBR Account'
+                    }
+                  </span>
                 )}
               </button>
             </form>
@@ -407,7 +702,7 @@ export default function Login() {
                   onClick={() => {
                     setIsLogin(!isLogin);
                     setErrors({});
-                    setFormData({ email: '', password: '', confirmPassword: '' });
+                    setFormData({ email: '', password: '', confirmPassword: '', fullName: '' });
                     setResetEmailSent(false);
                   }}
                   className="font-bold transition-colors text-[#8C1007] hover:text-black"
