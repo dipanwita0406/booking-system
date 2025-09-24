@@ -8,7 +8,7 @@ import { Calendar, Clock, MapPin, Users, CheckCircle, XCircle, AlertTriangle, Se
 import { useRouter } from 'next/navigation';
 
 const BookingSystem = () => {
-  const [selectedVenue, setSelectedVenue] = useState('canteen');
+  const [selectedVenue, setSelectedVenue] = useState('board Room');
   const [bookingDate, setBookingDate] = useState('');
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
@@ -142,7 +142,7 @@ const BookingSystem = () => {
     }
 
     if (checkForConflicts(selectedVenue, bookingDate, startTime, endTime)) {
-      setMessage({ type: 'error', text: `${selectedVenue === 'canteen' ? 'Canteen' : 'Auditorium'} is already booked for this time slot` });
+      setMessage({ type: 'error', text: `${selectedVenue === 'board room' ? 'Board Room' : 'Auditorium'} is already booked for this time slot` });
       return;
     }
 
@@ -154,7 +154,7 @@ const BookingSystem = () => {
         userEmail: currentUser.email,
         userName: currentUser.displayName || currentUser.email,
         venue: selectedVenue,
-        facilityName: selectedVenue === 'canteen' ? 'Canteen' : 'Auditorium',
+        facilityName: selectedVenue === 'board room' ? 'Board Room' : 'Auditorium',
         date: bookingDate,
         startTime: `${bookingDate}T${startTime}:00`,
         endTime: `${bookingDate}T${endTime}:00`,
@@ -268,20 +268,20 @@ const BookingSystem = () => {
                   <div className="grid grid-cols-2 gap-4">
                     <button
                       type="button"
-                      onClick={() => setSelectedVenue('canteen')}
-                      className={`p-4 rounded-lg border-2 transition-all duration-200 ${selectedVenue === 'canteen'
+                      onClick={() => setSelectedVenue('board room')}
+                      className={`p-4 rounded-lg border-2 transition-all duration-200 ${selectedVenue === 'board Room'
                           ? 'border-2 bg-white text-black shadow-md'
                           : 'border-gray-200 hover:border-gray-300 bg-white'
                         }`}
-                      style={selectedVenue === 'canteen' ? { borderColor: '#FFCC00' } : {}}
+                      style={selectedVenue === 'board room' ? { borderColor: '#FFCC00' } : {}}
                     >
                       <div className="flex items-center justify-center mb-2">
-                        <Users className={`h-6 w-6 ${selectedVenue === 'canteen' ? '' : 'text-gray-600'}`}
-                          style={selectedVenue === 'canteen' ? { color: '#8C1007' } : {}} />
+                        <Users className={`h-6 w-6 ${selectedVenue === 'board room' ? '' : 'text-gray-600'}`}
+                          style={selectedVenue === 'board room' ? { color: '#8C1007' } : {}} />
                       </div>
                       <div className="text-center">
-                        <h3 className="font-medium text-black">Canteen</h3>
-                        <p className="text-sm text-gray-500">Dining & Events</p>
+                        <h3 className="font-medium text-black">Board Room</h3>
+                        <p className="text-sm text-gray-500">Meetings</p>
                       </div>
                     </button>
 
